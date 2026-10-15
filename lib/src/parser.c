@@ -221,6 +221,22 @@ static bool ts_parser__breakdown_top_of_stack(
   return did_break_down;
 }
 
+// A hidden repetition node can be reused in any state that has a goto on its
+// symbol, not only in the state it was first parsed in. A repetition is
+// associative, so a run of its items parses the same wherever the repetition
+// is open. Balancing also rotates these nodes, so their recorded parse state
+// is the state of the repetition's start, which a reparse past the start
+// never matches.
+static inline bool ts_parser__can_shift_repetition(
+  TSParser *self,
+  Subtree tree,
+  TSStateId state
+) {
+  return
+    ts_subtree_is_repetition(tree) &&
+    ts_language_next_state(self->language, state, ts_subtree_symbol(tree)) != 0;
+}
+
 static void ts_parser__breakdown_lookahead(
   TSParser *self,
   Subtree *lookahead,
@@ -229,7 +245,11 @@ static void ts_parser__breakdown_lookahead(
 ) {
   bool did_descend = false;
   Subtree tree = reusable_node_tree(reusable_node);
-  while (ts_subtree_child_count(tree) > 0 && ts_subtree_parse_state(tree) != state) {
+  while (
+    ts_subtree_child_count(tree) > 0 &&
+    ts_subtree_parse_state(tree) != state &&
+    !ts_parser__can_shift_repetition(self, tree, state)
+  ) {
     LOG("state_mismatch sym:%s", TREE_NAME(tree));
     reusable_node_descend(reusable_node);
     tree = reusable_node_tree(reusable_node);
@@ -1684,7 +1704,18 @@ static bool ts_parser__advance(
         }
 
         case TSParseActionTypeReduce: {
-          bool is_fragile = table_entry.action_count > 1;
+          // A repetition shift is never taken (see the shift case above), so
+          // it does not make this reduction depend on the lookahead.
+          bool is_fragile = false;
+          uint32_t competing_actions = 0;
+          for (uint32_t j = 0; j < table_entry.action_count; j++) {
+            TSParseAction other = table_entry.actions[j];
+            if (other.type == TSParseActionTypeShift && other.shift.repetition) continue;
+            if (++competing_actions > 1) {
+              is_fragile = true;
+              break;
+            }
+          }
           bool end_of_non_terminal_extra = lookahead.ptr == NULL;
           LOG("reduce sym:%s, child_count:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count);
           StackVersion reduction_version = ts_parser__reduce(
