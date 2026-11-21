@@ -802,12 +802,7 @@ static Subtree ts_parser__reuse_node(
 
     if (!ts_subtree_external_scanner_state_eq(self->reusable_node.last_external_token, last_external_token)) {
       LOG("reusable_node_has_different_external_scanner_state symbol:%s", TREE_NAME(result));
-      // Descend rather than skip the whole node: a child that starts later may
-      // still be reusable, and it gets its own state check when the parser
-      // reaches it. Only a leaf is skipped.
-      if (!reusable_node_descend(&self->reusable_node)) {
-        reusable_node_advance(&self->reusable_node);
-      }
+      reusable_node_advance(&self->reusable_node);
       continue;
     }
 
