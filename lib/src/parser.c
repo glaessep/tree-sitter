@@ -179,6 +179,10 @@ static bool ts_parser__breakdown_top_of_stack(
 ) {
   bool did_break_down = false;
   bool pending = false;
+  // The state the repetition being broken down leaves the parser in. Its items are parsed in that
+  // state, however balancing nested the repetition.
+  TSStateId repetition_state = 0;
+  TSSymbol repetition_symbol = 0;
 
   do {
     StackSliceArray pop = ts_stack_pop_pending(self->stack, version);
@@ -190,15 +194,50 @@ static bool ts_parser__breakdown_top_of_stack(
       StackSlice slice = *array_get(&pop, i);
       TSStateId state = ts_stack_state(self->stack, slice.version);
       Subtree parent = *array_front(&slice.subtrees);
+      bool parent_is_repetition = ts_subtree_is_repetition(parent);
+      if (!parent_is_repetition) {
+        repetition_state = 0;
+      } else if (!repetition_state || repetition_symbol != ts_subtree_symbol(parent)) {
+        repetition_symbol = ts_subtree_symbol(parent);
+        repetition_state = ts_language_next_state(self->language, state, repetition_symbol);
+      }
 
-      for (uint32_t j = 0, n = ts_subtree_child_count(parent); j < n; j++) {
+      uint32_t n = ts_subtree_child_count(parent);
+      uint32_t first = 0;
+      if (
+        parent_is_repetition && repetition_state && n == 2 &&
+        !ts_subtree_is_repetition(ts_subtree_children(parent)[0]) &&
+        !ts_subtree_extra(ts_subtree_children(parent)[0]) &&
+        !ts_subtree_is_error(ts_subtree_children(parent)[0]) &&
+        ts_subtree_is_repetition(ts_subtree_children(parent)[1])
+      ) {
+        // A leaf or other item in front of a repetition: balancing put them side by side. Parsing
+        // never leaves an item unreduced under a repetition, so the item becomes a repetition of
+        // its own, and a later reduce pops complete repetitions only.
+        Subtree item = ts_subtree_children(parent)[0];
+        ts_subtree_retain(item);
+        SubtreeArray item_children = array_new();
+        array_push(&item_children, item);
+        Subtree prefix = ts_subtree_from_mut(
+          ts_subtree_new_node(ts_subtree_symbol(parent), &item_children, 0, self->language)
+        );
+        state = repetition_state;
+        ts_stack_push(self->stack, slice.version, prefix, false, state);
+        first = 1;
+      }
+
+      for (uint32_t j = first; j < n; j++) {
         Subtree child = ts_subtree_children(parent)[j];
         pending = ts_subtree_child_count(child) > 0;
 
         if (ts_subtree_is_error(child)) {
           state = ERROR_STATE;
         } else if (!ts_subtree_extra(child)) {
-          state = ts_language_next_state(self->language, state, ts_subtree_symbol(child));
+          if (parent_is_repetition && ts_subtree_is_repetition(child) && repetition_state) {
+            state = repetition_state;
+          } else {
+            state = ts_language_next_state(self->language, state, ts_subtree_symbol(child));
+          }
         }
 
         ts_subtree_retain(child);
