@@ -218,9 +218,11 @@ static bool ts_parser__breakdown_top_of_stack(
         ts_subtree_retain(item);
         SubtreeArray item_children = array_new();
         array_push(&item_children, item);
-        Subtree prefix = ts_subtree_from_mut(
-          ts_subtree_new_node(ts_subtree_symbol(parent), &item_children, 0, self->language)
-        );
+        MutableSubtree wrapper =
+          ts_subtree_new_node(ts_subtree_symbol(parent), &item_children, 0, self->language);
+        // As ts_parser__reduce does: the state under the node, which breakdown_lookahead compares.
+        wrapper.ptr->parse_state = state;
+        Subtree prefix = ts_subtree_from_mut(wrapper);
         state = repetition_state;
         ts_stack_push(self->stack, slice.version, prefix, false, state);
         first = 1;
